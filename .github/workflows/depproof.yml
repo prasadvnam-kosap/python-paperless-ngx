@@ -1,0 +1,61 @@
+name: depproof
+
+# MANUAL DISPATCH, matching the synthetic estate's template. Adding a schedule is a separate
+# decision; do not add one here without making it.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Ref to scan. Default is the pinned corpus commit, so a run here is comparable
+                      to the local corpus measurement. Change it only deliberately.'
+        default: 'depproof-pinned'
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write     # SARIF upload
+      pull-requests: write       # PR comment
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          # depth 1 of one ref. The scan reads manifests at a commit; it has no use for history,
+          # and a full clone of gitea or netbox on every run is wasted minutes.
+          fetch-depth: 1
+
+      - uses: depproof/depproof-action@v1
+        with:
+          discover: 'true'
+          output-dir: depproof-out
+          html: 'true'
+          # A SECRET, not a variable: variables are not masked in logs and these forks are
+          # public. The hostname is public DNS anyway, but there is no reason to print it.
+          report-to: ${{ secrets.DEPPROOF_HUB_URL }}
+          report-token: ${{ secrets.DEPPROOF_REPORT_TOKEN }}
+          # Required ONLY once a token exists. With one, a silent non-delivery is the single outcome
+          # that must not look green, so it hard-fails (engine exit 3). Without one, the scan still
+          # runs and still writes its artifacts -- a repo with no token configured should produce
+          # evidence, not a red cross about plumbing.
+          report-required: ${{ secrets.DEPPROOF_HUB_URL != '' && secrets.DEPPROOF_REPORT_TOKEN != '' }}
+          # bulk enrichment comes FROM the hub. With no hub the exploitation signal is simply
+          # absent and nothing says so -- a corpus scanned that way once reported 0 KEV across
+          # 592 findings and looked entirely normal. So fall back to online enrichment, which
+          # reads the public feeds directly, and only use bulk when a hub is configured.
+          enrich-mode: 'bulk'
+          enrich-online: ${{ secrets.DEPPROOF_HUB_URL == '' }}
+          job-summary: 'true'
+          pr-comment: 'true'
+
+      # always(): the gate FAILS on most of these repositories -- they are real projects with real
+      # CVEs, and that is the point. Without always() the artifacts are discarded on exactly the runs
+      # worth looking at.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: depproof-${{ github.event.repository.name }}
+          path: depproof-out/
+          if-no-files-found: warn
+          retention-days: 30
