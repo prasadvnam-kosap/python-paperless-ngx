@@ -40,12 +40,21 @@ jobs:
           # runs and still writes its artifacts -- a repo with no token configured should produce
           # evidence, not a red cross about plumbing.
           report-required: ${{ secrets.DEPPROOF_HUB_URL != '' && secrets.DEPPROOF_REPORT_TOKEN != '' }}
-          # bulk enrichment comes FROM the hub. With no hub the exploitation signal is simply
-          # absent and nothing says so -- a corpus scanned that way once reported 0 KEV across
-          # 592 findings and looked entirely normal. So fall back to online enrichment, which
-          # reads the public feeds directly, and only use bulk when a hub is configured.
+          # Enrichment comes FROM the hub: `enrich-online` applies the hub's exploitation data at
+          # scan time and REQUIRES report-to + report-token (see action.yml). So it must be true
+          # exactly when a hub is configured.
+          #
+          # This condition was inverted until 2026-08-30 -- `== ''` -- which turned enrichment OFF
+          # on precisely the runs that could do it, and on for the runs that cannot. Verified on the
+          # box: the first estate scan reached the hub with enrichment_snapshot_id NULL, zero rows
+          # in enrichment_served, and kev = false on every finding. That is the exact silent failure
+          # the old comment here warned about ("0 KEV across 592 findings and looked entirely
+          # normal") -- reintroduced by the line meant to prevent it.
+          #
+          # With no hub there is no enrichment and nothing pretends otherwise; report-required is
+          # likewise false, so such a repo still produces artifacts rather than a red cross.
           enrich-mode: 'bulk'
-          enrich-online: ${{ secrets.DEPPROOF_HUB_URL == '' }}
+          enrich-online: ${{ secrets.DEPPROOF_HUB_URL != '' }}
           job-summary: 'true'
           pr-comment: 'true'
 
