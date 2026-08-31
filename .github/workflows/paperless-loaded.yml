@@ -149,6 +149,39 @@ jobs:
       # if: always() -- the canary above fails the job when the measurement cannot be
       # trusted. Without this the artifact is never uploaded, so the one run that most
       # needs diagnosing is the one that returns no data. The job still goes red.
+      # Same question as the npm inventory: which installed distributions contain importable
+      # code? A distribution whose files are all metadata or .pyi type stubs can never appear in
+      # sys.modules, so counting it as "never loaded" inflates the result with the impossible.
+      #
+      # Written to a file first: a python -c block inside a YAML block scalar must stay indented
+      # or it terminates the scalar, and indented python is a syntax error. Two constraints that
+      # cannot both be met inline.
+      - name: Inventory — which distributions have importable code
+        if: always()
+        run: |
+          cat > inventory.py <<'PYEOF'
+          import json
+          from importlib.metadata import distributions
+          out = {}
+          for d in distributions():
+              try:
+                  name = d.metadata["Name"]
+              except Exception:
+                  continue
+              if not name:
+                  continue
+              files = list(d.files or [])
+              code = sum(1 for f in files if str(f).endswith((".py", ".so", ".pyd")))
+              stubs = sum(1 for f in files if str(f).endswith(".pyi"))
+              key = name.lower().replace("_", "-").replace(".", "-")
+              out[key] = {"version": d.version, "code_files": code,
+                          "stub_files": stubs, "total_files": len(files)}
+          json.dump(out, open("inventory.json", "w"), indent=1)
+          empty = sum(1 for v in out.values() if v["code_files"] == 0)
+          print("inventoried", len(out), "distributions;", empty, "with no importable code")
+          PYEOF
+          uv run --python "3.12" --frozen python inventory.py
+
       - name: Resolved set — depproof SBOM (the primary denominator)
         if: always()
         run: |
@@ -178,4 +211,5 @@ jobs:
             results/
             sbom/
             installed.txt
+            inventory.json
           retention-days: 14
