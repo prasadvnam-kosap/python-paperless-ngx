@@ -1,11 +1,8 @@
 # LOADED capture — python-paperless-ngx. THE CELL THAT PROVES THE PYTHON METHOD.
 #
-# Commit TWO files into the paperless-ngx fork, then dispatch:
-#   .github/workflows/paperless-loaded.yml   <- this file
-#   .github/depproof/sitecustomize.py        <- usage/capture/sitecustomize.py, copied verbatim
-#
-# The shim is committed rather than fetched at run time: depproof-corpus is private, so a raw
-# URL would 404, and a tracer that fails to download leaves a job that looks like it ran.
+# Install with usage/capture/install.sh, which embeds the tracer shim into this file as base64.
+# Do NOT commit the shim to the repo: this job checks out `depproof-pinned`, so anything committed
+# to the default branch is gone by the time the tracer is needed.
 #
 # WHY THIS CELL FIRST, AND NOT black. The Phase 0 spec assumed one Python method. There are two
 # obstacles in this row and neither is present here:
@@ -71,12 +68,12 @@ jobs:
 
       - name: Set up Python
         id: setup-python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0, as ci-backend.yml pins
         with:
           python-version: "3.12"    # matrix is 3.11-3.14; one version, stated
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v9
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0, as ci-backend.yml pins
         with:
           version: ${{ env.DEFAULT_UV_VERSION }}
           enable-cache: true
@@ -103,10 +100,19 @@ jobs:
       # attrs, which are facts to look up rather than inferences to make from a file path. It
       # writes one file per pid, so any forking the suite does is captured rather than
       # overwritten.
-      - name: Stage the tracer shim
+      # The shim is embedded here as base64 by install.sh, from usage/capture/sitecustomize.py.
+      #
+      # It is NOT committed to the repo and NOT read from the checkout, because the checkout above
+      # replaces the working tree with `depproof-pinned` -- and the pinned commit has never heard
+      # of our harness. Committing the shim to the DEFAULT branch (the first attempt) put it on a
+      # branch this job never checks out: NODE_OPTIONS then pointed at a missing file, which broke
+      # every node invocation including `npm clean-install`, and the run died before producing a
+      # single trace.
+      - name: Write the tracer shim
         run: |
           mkdir -p shim traces results
-          cp .github/depproof/sitecustomize.py shim/sitecustomize.py
+          echo 'IiIiUHl0aG9uIExPQURFRCB0cmFjZXIuIFB1dCB0aGlzIGRpcmVjdG9yeSBvbiBQWVRIT05QQVRIOyBDUHl0aG9uIGltcG9ydHMgaXQgYXV0b21hdGljYWxseS4KCiAgICBQWVRIT05QQVRIPXVzYWdlL2NhcHR1cmUgREVQUFJPT0ZfVFJBQ0VfRElSPXRyYWNlcyB1diBydW4gcHl0ZXN0CgpXSFkgc2l0ZWN1c3RvbWl6ZSBBTkQgTk9UIGAtWCBpbXBvcnR0aW1lYDogaW1wb3J0dGltZSB3cml0ZXMgYSBodW1hbi1yZWFkYWJsZSB0YWJsZSB0byBzdGRlcnIsCndoaWNoIHRoZSB0ZXN0IHJ1bm5lciBjYXB0dXJlcyBhbmQgaW50ZXJsZWF2ZXMsIGFuZCBpdCBuYW1lcyBNT0RVTEVTLCBub3QgZGlzdHJpYnV0aW9ucy4gVGhlCm1vZHVsZS10by1kaXN0cmlidXRpb24gc3RlcCBpcyB0aGUgaGFyZCBwYXJ0IGFuZCBpdCBpcyB0aGUgcGFydCB0aGF0IG11c3Qgbm90IGJlIGd1ZXNzZWQgLS0KYHlhbWxgIGNvbWVzIGZyb20gUHlZQU1MLCBgcGtnX3Jlc291cmNlc2AgZnJvbSBzZXR1cHRvb2xzLCBgYXR0cmAgZnJvbSBhdHRycy4gU28gdGhpcyByZXNvbHZlcwppbi1wcm9jZXNzIHdpdGggaW1wb3J0bGliLm1ldGFkYXRhLnBhY2thZ2VzX2Rpc3RyaWJ1dGlvbnMoKSwgd2hpY2ggaXMgc3RkbGliIGZyb20gMy4xMCBhbmQgaXMKdGhlIGF1dGhvcml0eSByYXRoZXIgdGhhbiBhbiBpbmZlcmVuY2UuCgpXSFkgT05FIEZJTEUgUEVSIFBJRDogbmV0Ym94J3MgZGVjbGFyZWQgY29tbWFuZCBpcyBgbWFuYWdlLnB5IHRlc3QgLS1wYXJhbGxlbGAsIHdoaWNoIEZPUktTCndvcmtlciBwcm9jZXNzZXMuIERqYW5nbyByZXBvcnRzIG9uZSBhZ2dyZWdhdGUgcmVzdWx0LCBzbyBhIHNpbmdsZSBvdXRwdXQgZmlsZSBsb29rcyBjb21wbGV0ZQp3aGlsZSBob2xkaW5nIG9uZSB3b3JrZXIncyBpbXBvcnRzLiBUaGF0IGlzIHRoZSBKVk0ncyBgJXBgIGxlc3NvbiAoQ1MtOCAjMikgaW4gYW5vdGhlcgplY29zeXN0ZW0sIGFuZCBpdCBpcyBlYXNpZXIgdG8gbWlzcyBoZXJlIGJlY2F1c2Ugbm90aGluZyB3YXJucyB5b3UuCgpXSFkgQVQgRVhJVCBBTkQgTk9UIEFUIElNUE9SVDogYW4gaW1wb3J0IGhvb2sgY2hhbmdlcyBpbXBvcnQgc2VtYW50aWNzIHVuZGVyIHRlc3Q7IHJlYWRpbmcKc3lzLm1vZHVsZXMgb25jZSwgYXQgZXhpdCwgZG9lcyBub3QuIExvYWRpbmcgaXMgYW4gdXBwZXIgYm91bmQgb24gdXNlIGVpdGhlciB3YXkgLS0gdGhpcwptZWFzdXJlcyBMT0FERUQsIGFuZCB0aGUgYXhpcyBpcyBuYW1lZCB0aGF0IGZvciBhIHJlYXNvbi4KIiIiCgppbXBvcnQgYXRleGl0CmltcG9ydCBvcwppbXBvcnQgc3lzCgoKZGVmIF9kdW1wKCk6CiAgICB0cmFjZV9kaXIgPSBvcy5lbnZpcm9uLmdldCgiREVQUFJPT0ZfVFJBQ0VfRElSIikKICAgIGlmIG5vdCB0cmFjZV9kaXI6CiAgICAgICAgcmV0dXJuCiAgICB0cnk6CiAgICAgICAgb3MubWFrZWRpcnModHJhY2VfZGlyLCBleGlzdF9vaz1UcnVlKQoKICAgICAgICBmcm9tIGltcG9ydGxpYi5tZXRhZGF0YSBpbXBvcnQgcGFja2FnZXNfZGlzdHJpYnV0aW9ucywgdmVyc2lvbgoKICAgICAgICAjIG1vZHVsZSB0b3AtbGV2ZWwgbmFtZSAtPiBbZGlzdHJpYnV0aW9uIG5hbWVzXQogICAgICAgIG1hcHBpbmcgPSBwYWNrYWdlc19kaXN0cmlidXRpb25zKCkKCiAgICAgICAgZm91bmQgPSB7fQogICAgICAgIHVucmVzb2x2ZWQgPSBzZXQoKQogICAgICAgIGZvciBtb2QgaW4gbGlzdChzeXMubW9kdWxlcyk6CiAgICAgICAgICAgIGlmIG5vdCBtb2Qgb3IgbW9kLnN0YXJ0c3dpdGgoIl8iKToKICAgICAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgICAgIHRvcCA9IG1vZC5zcGxpdCgiLiIsIDEpWzBdCiAgICAgICAgICAgIGRpc3RzID0gbWFwcGluZy5nZXQodG9wKQogICAgICAgICAgICBpZiBub3QgZGlzdHM6CiAgICAgICAgICAgICAgICAjIHN0ZGxpYiwgZmlyc3QtcGFydHksIG9yIGEgbmFtZXNwYWNlIHBhY2thZ2UgaW1wb3J0bGliIGNhbm5vdCBhdHRyaWJ1dGUuCiAgICAgICAgICAgICAgICAjIFJlY29yZGVkIHJhdGhlciB0aGFuIGRyb3BwZWQ6IGFuIHVuYXR0cmlidXRlZCBpbXBvcnQgdGhhdCBzaWxlbnRseSB2YW5pc2hlcwogICAgICAgICAgICAgICAgIyBiaWFzZXMgdGhlIHJlc3VsdCB0b3dhcmQgIm5ldmVyIGxvYWRlZCIsIHdoaWNoIGlzIHRoZSB1bnNhZmUgZGlyZWN0aW9uLgogICAgICAgICAgICAgICAgaWYgdG9wIG5vdCBpbiBzeXMuc3RkbGliX21vZHVsZV9uYW1lczoKICAgICAgICAgICAgICAgICAgICB1bnJlc29sdmVkLmFkZCh0b3ApCiAgICAgICAgICAgICAgICBjb250aW51ZQogICAgICAgICAgICBmb3IgZGlzdCBpbiBkaXN0czoKICAgICAgICAgICAgICAgIGlmIGRpc3Qgbm90IGluIGZvdW5kOgogICAgICAgICAgICAgICAgICAgIHRyeToKICAgICAgICAgICAgICAgICAgICAgICAgZm91bmRbZGlzdF0gPSB2ZXJzaW9uKGRpc3QpCiAgICAgICAgICAgICAgICAgICAgZXhjZXB0IEV4Y2VwdGlvbjoKICAgICAgICAgICAgICAgICAgICAgICAgZm91bmRbZGlzdF0gPSAiVU5LTk9XTiIKCiAgICAgICAgcGF0aCA9IG9zLnBhdGguam9pbih0cmFjZV9kaXIsIGYicHl0aG9uLXtvcy5nZXRwaWQoKX0udHh0IikKICAgICAgICB3aXRoIG9wZW4ocGF0aCwgInciKSBhcyBmaDoKICAgICAgICAgICAgZmgud3JpdGUoZiIjIHBpZCB7b3MuZ2V0cGlkKCl9IGFyZ3Y9eycgJy5qb2luKHN5cy5hcmd2WzozXSl9XG4iKQogICAgICAgICAgICBmb3IgbmFtZSBpbiBzb3J0ZWQoZm91bmQpOgogICAgICAgICAgICAgICAgZmgud3JpdGUoZiJ7bmFtZX09PXtmb3VuZFtuYW1lXX1cbiIpCiAgICAgICAgICAgICMgV3JpdHRlbiB0byB0aGUgU0FNRSBmaWxlIHNvIGl0IGNhbm5vdCBiZSByZWFkIHdpdGhvdXQgYmVpbmcgc2Vlbi4KICAgICAgICAgICAgZm9yIHRvcCBpbiBzb3J0ZWQodW5yZXNvbHZlZCk6CiAgICAgICAgICAgICAgICBmaC53cml0ZShmIiMgdW5yZXNvbHZlZC1tb2R1bGUge3RvcH1cbiIpCiAgICBleGNlcHQgRXhjZXB0aW9uIGFzIGU6ICAgICAgICAgICAgICAgICAgICAgICAjIG5ldmVyIGJyZWFrIHRoZSBzdWl0ZSBiZWluZyBtZWFzdXJlZAogICAgICAgIHN5cy5zdGRlcnIud3JpdGUoZiJbZGVwcHJvb2YtdHJhY2VdIHNoaW0gZmFpbGVkOiB7ZX1cbiIpCgoKYXRleGl0LnJlZ2lzdGVyKF9kdW1wKQo=' | base64 -d > shim/sitecustomize.py
+          wc -l shim/sitecustomize.py
 
       # PYTHONPATH puts the shim ahead of everything; CPython imports sitecustomize automatically
       # at interpreter start. The pytest command itself is the declared one, unchanged.
@@ -140,7 +146,11 @@ jobs:
           # so an attribution gap travels with the data instead of being rediscovered later.
           echo "unresolved modules: $(cat traces/python-*.txt | grep -c '^# unresolved-module' || true)"
 
+      # if: always() -- the canary above fails the job when the measurement cannot be
+      # trusted. Without this the artifact is never uploaded, so the one run that most
+      # needs diagnosing is the one that returns no data. The job still goes red.
       - name: Resolved set — depproof SBOM (the primary denominator)
+        if: always()
         run: |
           mkdir -p sbom
           docker run --rm -v "$PWD:/w" -w /w ghcr.io/depproof/depproof:v0 \
@@ -149,10 +159,18 @@ jobs:
 
       # Cross-check: what is actually installed in the venv the tests ran in. A divergence from
       # depproof's resolved set is a fidelity measurement, not a nuisance.
+      # if: always() -- the canary above fails the job when the measurement cannot be
+      # trusted. Without this the artifact is never uploaded, so the one run that most
+      # needs diagnosing is the one that returns no data. The job still goes red.
       - name: Cross-check — the installed environment
+        if: always()
         run: uv pip list --format=freeze > installed.txt || true
 
+      # if: always() -- the canary above fails the job when the measurement cannot be
+      # trusted. Without this the artifact is never uploaded, so the one run that most
+      # needs diagnosing is the one that returns no data. The job still goes red.
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: loaded-paperless-ngx
           path: |
