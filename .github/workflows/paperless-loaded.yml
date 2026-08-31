@@ -1,0 +1,163 @@
+# LOADED capture — python-paperless-ngx. THE CELL THAT PROVES THE PYTHON METHOD.
+#
+# Commit TWO files into the paperless-ngx fork, then dispatch:
+#   .github/workflows/paperless-loaded.yml   <- this file
+#   .github/depproof/sitecustomize.py        <- usage/capture/sitecustomize.py, copied verbatim
+#
+# The shim is committed rather than fetched at run time: depproof-corpus is private, so a raw
+# URL would 404, and a tracer that fails to download leaves a job that looks like it ran.
+#
+# WHY THIS CELL FIRST, AND NOT black. The Phase 0 spec assumed one Python method. There are two
+# obstacles in this row and neither is present here:
+#
+#   paperless-ngx  `uv run pytest`              -- a real venv, pytest directly, no indirection.
+#                                                  The shim is imported by the same interpreter
+#                                                  that runs the tests. Observable.
+#   pyproject-black `tox -e ci-py312`           -- tox builds a SEPARATE virtualenv and runs
+#                                                  pytest inside it. A tracer at the outer
+#                                                  interpreter watches TOX, not the tests --
+#                                                  CS-8 #3 (the parent build JVM) in another
+#                                                  ecosystem. Deferred.
+#   python-netbox  `manage.py test --parallel`  -- FORKS workers and reports one aggregate
+#                                                  result, so a single output file looks
+#                                                  complete while holding one worker's imports.
+#                                                  Deferred.
+#
+# THE DENOMINATOR IS FREE HERE. paperless' pyproject.toml already has `--junitxml=junit.xml` in
+# pytest addopts, so the coverage denominator needs no modification to the declared command at
+# all. Nothing about which tests run is changed by this workflow.
+#
+# EVERY SETUP STEP BELOW IS VERBATIM FROM ci-backend.yml, including the four service containers,
+# the OCR system packages, the ImageMagick policy and the NLTK corpora. CS-8 #7: a harness that
+# skips setup because it "looks unrelated to dependencies" manufactures failures and then reports
+# them as properties of the corpus. A suite that dies in collection loads almost nothing and
+# would score ~100% never-loaded.
+
+name: LOADED capture — paperless-ngx
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: >-
+          Commit or branch to measure. Defaults to the corpus pin. A fork's DEFAULT branch tracks
+          upstream's head, not our SHA, so measuring the default branch measures different code
+          than corpus.yaml claims — and the number would silently not be comparable to CS-7.
+        required: false
+        default: 'depproof-pinned'
+
+permissions:
+  contents: read
+
+env:
+  DEFAULT_UV_VERSION: "0.12.x"
+  NLTK_DATA: "/usr/share/nltk_data"
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04        # the repo pins 24.04 explicitly, not ubuntu-latest
+    steps:
+      # The workflow lives on the DEFAULT branch (GitHub only offers Run workflow there) but
+      # measures the PIN. Same split as templates/depproof-fork.yml.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      # gotenberg, tika, greenmail, nginx. Not Postgres — paperless' test settings use sqlite.
+      - name: Start service containers
+        run: |
+          docker compose --file docker/compose/docker-compose.ci-test.yml pull --quiet
+          docker compose --file docker/compose/docker-compose.ci-test.yml up --detach
+
+      - name: Set up Python
+        id: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"    # matrix is 3.11-3.14; one version, stated
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9
+        with:
+          version: ${{ env.DEFAULT_UV_VERSION }}
+          enable-cache: true
+          python-version: ${{ steps.setup-python.outputs.python-version }}
+
+      - name: Install system dependencies
+        timeout-minutes: 10
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -qq --no-install-recommends \
+            unpaper tesseract-ocr imagemagick ghostscript poppler-utils
+
+      - name: Configure ImageMagick
+        run: sudo cp docker/rootfs/etc/ImageMagick-6/paperless-policy.xml /etc/ImageMagick-6/policy.xml
+
+      - name: Install Python dependencies
+        run: uv sync --python "3.12" --group testing --frozen
+
+      - name: Install NLTK data
+        run: uv run python -m nltk.downloader punkt punkt_tab snowball_data stopwords -d "${NLTK_DATA}"
+
+      # The shim resolves modules to DISTRIBUTIONS in-process via
+      # importlib.metadata.packages_distributions() -- `yaml` comes from PyYAML and `attr` from
+      # attrs, which are facts to look up rather than inferences to make from a file path. It
+      # writes one file per pid, so any forking the suite does is captured rather than
+      # overwritten.
+      - name: Stage the tracer shim
+        run: |
+          mkdir -p shim traces results
+          cp .github/depproof/sitecustomize.py shim/sitecustomize.py
+
+      # PYTHONPATH puts the shim ahead of everything; CPython imports sitecustomize automatically
+      # at interpreter start. The pytest command itself is the declared one, unchanged.
+      - name: Run tests with the tracer
+        env:
+          NLTK_DATA: ${{ env.NLTK_DATA }}
+          PAPERLESS_CI_TEST: 1
+          PYTHONPATH: ${{ github.workspace }}/shim
+          DEPPROOF_TRACE_DIR: ${{ github.workspace }}/traces
+        run: |
+          uv run --python "3.12" --dev --frozen pytest \
+            || echo "suite exited $? — a partial suite still yields a valid trace"
+          cp junit.xml results/ 2>/dev/null || true
+
+      # CS-8 #1. An empty capture must fail the job, never become a percentage.
+      - name: Canary — the shim ran and the denominator exists
+        run: |
+          n=$(ls traces/python-*.txt 2>/dev/null | wc -l)
+          dists=$(cat traces/python-*.txt 2>/dev/null | grep -vc '^#' || echo 0)
+          echo "$n process traces, $dists distribution lines"
+          if [ "$n" -lt 1 ] || [ "${dists:-0}" -lt 20 ]; then
+            echo "::error::the sitecustomize shim did not run, or observed almost nothing."
+            echo "::error::PYTHONPATH may not have reached the uv-managed interpreter."
+            exit 1
+          fi
+          if [ ! -s results/junit.xml ]; then
+            echo "::error::no junit.xml — no coverage denominator, so no publishable number."
+            exit 1
+          fi
+          # The shim records modules it could not attribute to a distribution in the same file,
+          # so an attribution gap travels with the data instead of being rediscovered later.
+          echo "unresolved modules: $(cat traces/python-*.txt | grep -c '^# unresolved-module' || true)"
+
+      - name: Resolved set — depproof SBOM (the primary denominator)
+        run: |
+          mkdir -p sbom
+          docker run --rm -v "$PWD:/w" -w /w ghcr.io/depproof/depproof:v0 \
+            scan --discover --output-dir sbom || true
+          ls -la sbom/
+
+      # Cross-check: what is actually installed in the venv the tests ran in. A divergence from
+      # depproof's resolved set is a fidelity measurement, not a nuisance.
+      - name: Cross-check — the installed environment
+        run: uv pip list --format=freeze > installed.txt || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: loaded-paperless-ngx
+          path: |
+            traces/
+            results/
+            sbom/
+            installed.txt
+          retention-days: 14
