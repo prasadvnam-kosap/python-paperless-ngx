@@ -31,6 +31,14 @@ jobs:
           discover: 'true'
           output-dir: depproof-out
           html: 'true'
+          # Code scanning. Enabled HERE and deliberately NOT on the private estate fixtures: on a
+          # private repository the Security tab needs GitHub Code Security, which this account does
+          # not have, so the upload there would warn on every run and prove nothing. These forks are
+          # public, where it is free — the one place the whole path can actually be exercised.
+          #
+          # The `security-events: write` permission above predates this by weeks; it was declared
+          # for an upload that did not exist yet.
+          sarif: 'true'
           # A SECRET, not a variable: variables are not masked in logs and these forks are
           # public. The hostname is public DNS anyway, but there is no reason to print it.
           report-to: ${{ secrets.DEPPROOF_HUB_URL }}
