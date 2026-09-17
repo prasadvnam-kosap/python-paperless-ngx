@@ -1,7 +1,7 @@
 name: depproof-behaviour
 
 # SIMULATION — BEHAVIOUR on this fork's own tests. Runs the suite WITHOUT the recorder, then WITH it, and puts both
-# exit codes and durations in the job summary (the recorder must never change what the tests do), then scans with
+# results (pass/fail/skip, failing tests) in the job summary (the recorder must never change what the tests do), then scans with
 # the BEHAVIOUR axis and reports to the hub. Separate from depproof.yml, which is untouched. Manual dispatch only.
 on:
   workflow_dispatch:
@@ -20,12 +20,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     env:
-      NLTK_DATA: ${{ github.workspace }}/.nltk_data
+      NLTK_DATA: /usr/share/nltk_data   # where paperless's tests look (its ci-backend.yml sets the same)
       PAPERLESS_CI_TEST: 1
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
+      - name: Start the helper services the live tests need (tika, gotenberg, nginx), as the repo's ci-backend.yml does
+        run: |
+          docker compose --file docker/compose/docker-compose.ci-test.yml pull --quiet
+          docker compose --file docker/compose/docker-compose.ci-test.yml up --detach
       - id: setup-python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0, as the repo's ci-backend.yml pins
         with:
@@ -42,7 +46,10 @@ jobs:
           sudo apt-get install -qq --no-install-recommends unpaper tesseract-ocr imagemagick ghostscript poppler-utils
       - run: sudo cp docker/rootfs/etc/ImageMagick-6/paperless-policy.xml /etc/ImageMagick-6/policy.xml
       - run: uv sync --python "3.12" --group testing --frozen
-      - run: uv run python -m nltk.downloader punkt punkt_tab snowball_data stopwords -d "${NLTK_DATA}"
+      - name: Install NLTK data where the tests look for it
+        run: |
+          sudo mkdir -p "${NLTK_DATA}" && sudo chown "$(id -u)" "${NLTK_DATA}"
+          uv run python -m nltk.downloader punkt punkt_tab snowball_data stopwords -d "${NLTK_DATA}"
 
       - id: behaviour
         uses: depproof/depproof-action/behaviour-setup@behaviour-candidate
@@ -58,6 +65,7 @@ jobs:
           start=$(date +%s); set +e
           uv run --python 3.12 --dev --frozen pytest
           echo "exit=$?" >> "$GITHUB_OUTPUT"; echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
+          mkdir -p .depproof-arms/without && { mv junit.xml .depproof-arms/without/junit.xml 2>/dev/null; } || true
 
       - name: Tests WITH the recorder
         id: with
@@ -70,6 +78,7 @@ jobs:
           start=$(date +%s); set +e
           uv run --python 3.12 --dev --frozen pytest
           echo "exit=$?" >> "$GITHUB_OUTPUT"; echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
+          mkdir -p .depproof-arms/with && { mv junit.xml .depproof-arms/with/junit.xml 2>/dev/null; } || true
 
       - name: Neutrality summary
         if: always()
@@ -80,13 +89,47 @@ jobs:
           T1: ${{ steps.with.outputs.seconds }}
           ON: ${{ steps.behaviour.outputs.enabled }}
         run: |
-          verdict=$([ "$E0" = "$E1" ] && echo "same exit code" || echo "EXIT CODE DIFFERS — investigate")
-          {
-            echo "### BEHAVIOUR neutrality"
-            echo "| arm | exit | seconds |"; echo "|---|---|---|"
-            echo "| without recorder | $E0 | $T0 |"; echo "| with recorder (enabled=$ON) | $E1 | $T1 |"
-            echo; echo "**$verdict**"
-          } >> "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PY'
+          # Compare what the tests DID in each arm, not only the exit code: a suite that already fails can exit 1
+          # both times while different tests fail. JUnit reports give per-test outcomes; node --test gives counts.
+          import glob, os, re, xml.etree.ElementTree as ET
+          def results(arm):
+              d = f".depproof-arms/{arm}"
+              tests = {}
+              for f in glob.glob(f"{d}/**/*.xml", recursive=True):
+                  try: root = ET.parse(f).getroot()
+                  except Exception: continue
+                  for tc in root.iter("testcase"):
+                      tid = f'{tc.get("classname","")}::{tc.get("name","")}'
+                      tests[tid] = "failed" if (tc.find("failure") is not None or tc.find("error") is not None) \
+                          else "skipped" if tc.find("skipped") is not None else "passed"
+              if tests:
+                  c = {k: sum(1 for v in tests.values() if v == k) for k in ("passed", "failed", "skipped")}
+                  return c, sorted(t for t, v in tests.items() if v == "failed")
+              log = f"{d}/output.log"
+              if os.path.exists(log):
+                  txt = open(log, errors="replace").read()
+                  g = lambda k: int((re.findall(rf"^\S*\s*{k} (\d+)\s*$", txt, re.M) or ["0"])[-1])
+                  return {"passed": g("pass"), "failed": g("fail"), "skipped": g("skipped")}, None
+              return None, None
+          c0, f0 = results("without"); c1, f1 = results("with")
+          e0, e1, on = os.environ.get("E0"), os.environ.get("E1"), os.environ.get("ON")
+          row = lambda c: " | ".join(str(c[k]) for k in ("passed", "failed", "skipped")) if c else "– | – | –"
+          same_exit = e0 == e1
+          same_counts = c0 is not None and c0 == c1
+          same_failures = f0 is None or f0 == f1
+          ok = same_exit and same_counts and same_failures
+          out = ["### BEHAVIOUR neutrality", "| arm | exit | passed | failed | skipped | seconds |", "|---|---|---|---|---|---|",
+                 f"| without recorder | {e0} | {row(c0)} | {os.environ.get('T0')} |",
+                 f"| with recorder (enabled={on}) | {e1} | {row(c1)} | {os.environ.get('T1')} |", ""]
+          if c0 is None: out.append("**Could not read test results — exit codes only: " + ("same exit code" if same_exit else "EXIT CODE DIFFERS") + "**")
+          else: out.append("**NEUTRAL — same exit code, same results" + (", same failing tests" if f0 is not None else "") + "**" if ok else "**DIFFERENCE — investigate**")
+          if f0 is not None and f0 != f1:
+              out += ["", "Failing only without the recorder: " + (", ".join(sorted(set(f0) - set(f1))) or "none"),
+                      "Failing only with the recorder: " + (", ".join(sorted(set(f1) - set(f0))) or "none")]
+          if f0: out += ["", f"<details><summary>{len(f0)} test(s) failing in both arms</summary>", ""] + [f"- `{t}`" for t in f0] + ["", "</details>"]
+          open(os.environ["GITHUB_STEP_SUMMARY"], "a").write("\n".join(out) + "\n")
+          PY
 
       - uses: depproof/depproof-action@behaviour-candidate
         if: always()
