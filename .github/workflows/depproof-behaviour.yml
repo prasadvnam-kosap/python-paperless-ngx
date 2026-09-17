@@ -13,10 +13,13 @@ on:
       scanner-image:
         description: 'Scanner image under test'
         required: false
-        default: 'ghcr.io/depproof/depproof:v0.1.25-rc.2'
+        default: 'ghcr.io/depproof/depproof:v0.1.25-rc.3'
 
 jobs:
   behaviour:
+    permissions:
+      contents: read
+      security-events: write     # new behaviour reaches the Security tab as SARIF notes
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     env:
@@ -137,6 +140,7 @@ jobs:
           scanner-image: ${{ inputs.scanner-image }}
           discover: 'true'
           fail-on: none
+          sarif: 'true'
           behaviour-from: ${{ steps.behaviour.outputs.from }}
           report-to: ${{ secrets.DEPPROOF_HUB_URL }}
           report-token: ${{ secrets.DEPPROOF_REPORT_TOKEN }}
