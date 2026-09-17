@@ -1,0 +1,100 @@
+name: depproof-behaviour
+
+# SIMULATION — BEHAVIOUR on this fork's own tests. Runs the suite WITHOUT the recorder, then WITH it, and puts both
+# exit codes and durations in the job summary (the recorder must never change what the tests do), then scans with
+# the BEHAVIOUR axis and reports to the hub. Separate from depproof.yml, which is untouched. Manual dispatch only.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Ref to test (the corpus pin by default)'
+        required: false
+        default: 'depproof-pinned'
+      scanner-image:
+        description: 'Scanner image under test'
+        required: false
+        default: 'ghcr.io/depproof/depproof:v0.1.25-rc.1'
+
+jobs:
+  behaviour:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      NLTK_DATA: ${{ github.workspace }}/.nltk_data
+      PAPERLESS_CI_TEST: 1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - id: setup-python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0, as the repo's ci-backend.yml pins
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0, as the repo's ci-backend.yml pins
+        with:
+          version: "0.12.x"
+          enable-cache: true
+          python-version: ${{ steps.setup-python.outputs.python-version }}
+      - name: Install system dependencies
+        timeout-minutes: 10
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -qq --no-install-recommends unpaper tesseract-ocr imagemagick ghostscript poppler-utils
+      - run: sudo cp docker/rootfs/etc/ImageMagick-6/paperless-policy.xml /etc/ImageMagick-6/policy.xml
+      - run: uv sync --python "3.12" --group testing --frozen
+      - run: uv run python -m nltk.downloader punkt punkt_tab snowball_data stopwords -d "${NLTK_DATA}"
+
+      - id: behaviour
+        uses: depproof/depproof-action/behaviour-setup@main
+        with:
+          scanner-image: ${{ inputs.scanner-image }}
+
+      - name: Tests WITHOUT the recorder
+        id: without
+        continue-on-error: true
+        env:
+          PAPERLESS_CI_TEST: '1'
+        run: |
+          start=$(date +%s); set +e
+          uv run --python 3.12 --dev --frozen pytest
+          echo "exit=$?" >> "$GITHUB_OUTPUT"; echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
+
+      - name: Tests WITH the recorder
+        id: with
+        continue-on-error: true
+        env:
+          PAPERLESS_CI_TEST: '1'
+          DEPPROOF_BEHAVIOUR_DIR: ${{ steps.behaviour.outputs.dir }}
+          PYTHONPATH: ${{ steps.behaviour.outputs.pythonpath }}
+        run: |
+          start=$(date +%s); set +e
+          uv run --python 3.12 --dev --frozen pytest
+          echo "exit=$?" >> "$GITHUB_OUTPUT"; echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
+
+      - name: Neutrality summary
+        if: always()
+        env:
+          E0: ${{ steps.without.outputs.exit }}
+          E1: ${{ steps.with.outputs.exit }}
+          T0: ${{ steps.without.outputs.seconds }}
+          T1: ${{ steps.with.outputs.seconds }}
+          ON: ${{ steps.behaviour.outputs.enabled }}
+        run: |
+          verdict=$([ "$E0" = "$E1" ] && echo "same exit code" || echo "EXIT CODE DIFFERS — investigate")
+          {
+            echo "### BEHAVIOUR neutrality"
+            echo "| arm | exit | seconds |"; echo "|---|---|---|"
+            echo "| without recorder | $E0 | $T0 |"; echo "| with recorder (enabled=$ON) | $E1 | $T1 |"
+            echo; echo "**$verdict**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: depproof/depproof-action@main
+        if: always()
+        with:
+          scanner-image: ${{ inputs.scanner-image }}
+          discover: 'true'
+          fail-on: none
+          behaviour-from: ${{ steps.behaviour.outputs.from }}
+          report-to: ${{ secrets.DEPPROOF_HUB_URL }}
+          report-token: ${{ secrets.DEPPROOF_REPORT_TOKEN }}
+          pr-comment: 'false'
