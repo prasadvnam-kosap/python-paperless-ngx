@@ -13,7 +13,7 @@ on:
       scanner-image:
         description: 'Scanner image under test'
         required: false
-        default: 'ghcr.io/depproof/depproof:v0.1.25-rc.3'
+        default: 'ghcr.io/depproof/depproof:v1'
 
 jobs:
   behaviour:
@@ -55,7 +55,7 @@ jobs:
           uv run python -m nltk.downloader punkt punkt_tab snowball_data stopwords -d "${NLTK_DATA}"
 
       - id: behaviour
-        uses: depproof/depproof-action/behaviour-setup@behaviour-candidate
+        uses: depproof/depproof-action/behaviour-setup@v1
         with:
           scanner-image: ${{ inputs.scanner-image }}
 
@@ -134,7 +134,7 @@ jobs:
           open(os.environ["GITHUB_STEP_SUMMARY"], "a").write("\n".join(out) + "\n")
           PY
 
-      - uses: depproof/depproof-action@behaviour-candidate
+      - uses: depproof/depproof-action@v1
         if: always()
         with:
           scanner-image: ${{ inputs.scanner-image }}
